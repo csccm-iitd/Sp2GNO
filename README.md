@@ -1,4 +1,4 @@
-# GrADE
+# Sp2GNO
 ### This repository contains the official implemention of the paper Spatio-spectral graph neural operator for solving computational mechanics problems on irregular domain and unstructured grid
 ![Sp2GNO](./images/SP2GNO_schematic_fig.png "Sp2GNO Overall Architecture")
 ## 1D Viscous Burgers' Equation
