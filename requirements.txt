@@ -1,0 +1,4 @@
+torch-geometric==2.4.0
+matplotlib
+pandas
+prettytable

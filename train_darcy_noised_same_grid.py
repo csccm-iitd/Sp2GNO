@@ -1,0 +1,398 @@
+import torch
+import numpy as np
+import torch.nn.functional as F
+from torch_geometric.data import Data
+from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+from timeit import default_timer
+import os
+import shutil
+
+from torch_geometric.nn import radius_graph
+from torch_geometric.utils import to_undirected, dense_to_sparse, add_remaining_self_loops
+from models.darcy.Sp2GNO_frigate import GraphFNO
+from src.utilities import *
+from src.dataset_darcy_noised_same_grid import Dataset
+from torch.utils.data import Subset, DataLoader
+from datetime import datetime
+import inspect
+import importlib.util
+import sys
+import logging
+import random
+import matplotlib as mpl
+from src.save_loss_excel import export_excel
+
+torch.manual_seed(0)
+np.random.seed(0)
+torch.cuda.manual_seed(0)
+torch.backends.cudnn.deterministic = True
+
+dataset_name = 'darcy'
+
+def setup_logging(log_folder, log_level=logging.INFO):
+    # Configure logging
+    logging.basicConfig(
+        level=log_level, 
+
+        format='%(message)s',
+        filename=os.path.join(log_folder, "log.txt"), 
+        filemode='w'
+    )
+
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO) 
+    logging.getLogger('').addHandler(console)
+
+
+# Define a function to create a folder with a timestamp
+def create_log_folder():
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_folder = f"./log_folder/training_logs_{timestamp}"
+    os.makedirs(log_folder)
+    path = f'./{log_folder}/GraphFNO_{dataset_name}_Results/'
+    path_model =  path+'model_irregular/'
+    path_image_test61 = path +'image_irregular/'
+    os.makedirs(path_model)
+    os.makedirs(path_image_test61)
+
+    return log_folder , path_model, path_image_test61
+
+# Define a function to get the module name from where GraphFNO is imported
+def get_module_name():
+    import_line = next(line for line in open(__file__) if "import GraphFNO" in line)
+    module_name = import_line.split(" ")[1]  # Get the module name from the import statement
+    return module_name
+
+# Define a function to save the current script and the module script to the log folder
+def save_scripts(log_folder):
+    shutil.copy(__file__, os.path.join(log_folder, "train.py"))
+    module_name = get_module_name()
+    module_spec = importlib.util.find_spec(module_name)
+    module_path = module_spec.origin
+    shutil.copy(module_path, os.path.join(log_folder, f"{module_name}.py"))
+
+
+def save_results(log_folder, results, training_info):
+    with open(os.path.join(log_folder, "results.txt"), "w") as results_file:
+        results_file.write(results)
+        results_file.write("\n\nTraining Loop Information:\n")
+        results_file.write(training_info)
+        results_file.write("\n")
+
+
+log_folder , path_model, path_image_test61 = create_log_folder()
+save_scripts(log_folder)
+setup_logging(log_folder)
+
+
+
+  
+#==================================data preprocessing starts===================================
+
+
+PATH_XY =None
+PATH_rr =None
+INPUT_X =None
+INPUT_Y =None
+OUTPUT_Sigma =None
+radius_train = None
+radius_test = None
+PATH_TRAIN = None
+PATH_TEST = None
+noise_std = 0.008
+
+if dataset_name == 'airfoil':
+
+    PATH = "../data/naca"
+    if noise_std is None:
+        INPUT_X = PATH + '/NACA_Cylinder_X.npy'
+        INPUT_Y = PATH + '/NACA_Cylinder_Y.npy'
+        OUTPUT_Sigma = PATH + '/NACA_Cylinder_Q.npy'
+        radius_train = 0.055
+        radius_test = 0.055
+    else:
+
+        INPUT_X = PATH + f'/NACA_Cylinder_X_noised_{noise_std}.npy'
+        INPUT_Y = PATH + f'/NACA_Cylinder_Y_noised_{noise_std}.npy'
+        OUTPUT_Sigma = PATH + f'/NACA_Cylinder_Q_noised_{noise_std}.npy'
+        radius_train = 0.055
+        radius_test = 0.055
+
+
+elif dataset_name == 'elasticity':
+    PATH = '../data/elasticity/Meshes'
+    OUTPUT_Sigma = PATH+'/Random_UnitCell_sigma_10.npy'
+    PATH_XY = PATH+ '/Random_UnitCell_XY_10.npy'
+    PATH_rr = PATH+ '/Random_UnitCell_rr_10.npy'
+    radius_train = 0.08
+    radius_test = 0.08
+
+elif dataset_name == 'pipe':
+    if noise_std is None:
+        PATH = "/home/subhankar/data/pipe/pipe"
+        INPUT_X = PATH +'/Pipe_X.npy'
+        INPUT_Y = PATH + '/Pipe_Y.npy'
+        OUTPUT_Sigma = PATH + '/Pipe_Q.npy'
+        radius_train = 0.08
+        radius_test = 0.08
+    else:
+        PATH = "/home/subhankar/data/pipe/pipe"
+        INPUT_X = PATH +f'/Pipe_X_noised_{noise_std}.npy'
+        INPUT_Y = PATH + f'/Pipe_Y_noised_{noise_std}.npy'
+        OUTPUT_Sigma = PATH + f'/Pipe_Q_noised_{noise_std}.npy'
+        radius_train = 0.08
+        radius_test = 0.08
+        
+    
+elif dataset_name == 'darcy':
+    if noise_std is None:
+        PATH = "../data/darcy/Darcy_421/"
+        PATH_TRAIN = PATH +'piececonst_r421_N1024_smooth1.mat'
+        PATH_TEST = PATH + 'piececonst_r421_N1024_smooth2.mat'
+        radius_train = 0.08
+        radius_test = 0.08
+        
+    else:
+        PATH = "../data/darcy/Darcy_421/"
+        PATH_TRAIN = PATH +f'piececonst_r421_N1024_smooth1_noised_{noise_std}.mat'
+        PATH_TEST = PATH + f'piececonst_r421_N1024_smooth2_noised_{noise_std}.mat'
+        radius_train = 0.08
+        radius_test = 0.08
+        
+
+
+
+ntrain = 1000
+ntest = 200
+batch_size = 1
+# radius_train = 0.06
+# radius_test = 0.06
+
+normalized = False
+cropped = True
+s =[4.0]
+g_type = 'knn'
+
+if dataset_name == 'airfoil':
+    k = 30
+if dataset_name == 'elasticity':
+    k = 20
+if dataset_name == 'darcy':
+    k = 20
+if dataset_name == 'pipe':
+    k = 25
+# Create dataset and dataloaders
+dataset = Dataset(INPUT_X, INPUT_Y, OUTPUT_Sigma, PATH_TRAIN, PATH_TEST, ntrain, ntest, radius_train, k, 
+                  radius_test,  s, 'GraphFNO', path_xy= PATH_XY, path_rr = PATH_rr,
+                    new_chunk_Size=1200, old_chunk_size = 1200,
+                    normalized = normalized, cropped =cropped, g_type = 'knn', 
+                    dataset_name = dataset_name, noise_std = noise_std , dist_weighted_laplacian = False)
+
+train_indices = [i for i in range(ntrain)]
+test_indices = [i for i in range(ntrain, ntrain+ntest)]
+train_dataset = Subset(dataset, train_indices)
+test_dataset = Subset(dataset, test_indices)
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+
+#==========================================================================================================================
+
+
+
+
+
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+logging.info(f"device : {device}")  
+logging.info(f'batch_size {batch_size}')
+learning_rate = 0.001
+epochs = 3000
+
+
+#====================== optimizable parameters======================
+num_wavelet_layers = 6
+width = 48
+num_of_frequency_to_learn = 64
+step_size = 100
+gamma = 0.65
+B = 10
+#===================================================================
+
+N = dataset.N
+
+
+
+logging.info("================training started ===================")
+
+logging.info(f"dataset_name : {dataset_name}")
+logging.info(f"number of GraphFourier Layer {num_wavelet_layers}" )
+
+model = GraphFNO(num_wavelet_layers, width, N, num_of_frequency_to_learn, device, dataset).to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+# optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+# optimizer = Adam(model.parameters(), lr=learning_rate)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+
+myloss = LpLoss(size_average=False)
+# myloss = torch.nn.MSELoss(reduction='sum')
+
+ttrain = np.zeros((epochs, ))
+# from torch.autograd.profiler import profile
+# with profile(use_cuda=True) as prof:
+for ep in range(epochs):
+    model.train()
+    t1 = default_timer()
+    train_mse = 0.0
+    batch_loss = 0.0
+    # breakpoint()
+    for i, batch in enumerate(train_loader):
+        batch = Data(**batch)
+        batch = batch.to(device)
+
+        optimizer.zero_grad()
+        out = model(batch)
+
+
+        # breakpoint()
+        # mse = F.mse_loss(out.view(-1, 1), batch.y.view(-1, 1))
+        # loss = torch.norm(out.view(-1) - batch.y.view(-1), 1)
+        # loss.backward()
+
+        if normalized:
+            
+            out = dataset.y_normalizer.decode(out.view(batch_size, -1))
+            batch.y = dataset.y_normalizer.decode(batch.y.view(batch_size, -1))
+
+
+        l2 = myloss(out.view(batch_size, -1), batch.y.view(batch_size, -1))
+        # l2.backward()
+        # optimizer.step()
+        batch_loss += l2
+        if (i+1)%B==0:
+            batch_loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            batch_loss = 0.0
+
+        train_mse += l2.item()
+
+        train_mse += l2.item()
+
+    scheduler.step()
+    t2 = default_timer()
+
+    
+    ttrain[ep] = train_mse / len(train_loader)
+    test_l2_61 = 0.0
+    plot_data = []
+    if ep % 1 == 0:
+        with torch.no_grad():
+            for batch in test_loader:
+                data={}
+                batch = Data(**batch)
+                batch = batch.to(device)
+                out = model(batch)
+                data['pos']= batch.pos
+                data['x'] = batch.x
+                data['y'] = batch.y
+                data['out'] = out
+                plot_data.append(data)
+
+                if normalized:
+                    # breakpoint()
+                    out = dataset.y_normalizer.decode(out.view(batch_size, -1))
+                    batch.y = dataset.y_normalizer.decode(batch.y.view(batch_size , -1))
+
+                test_l2_61 += myloss(out.view(batch_size, -1),
+                                    batch.y.view(batch_size, -1)).item()
+
+        logging.info(f'{ep} time: {t2-t1} train_mse: {train_mse / len(train_loader)} test_mse: {test_l2_61 / len(test_loader)}')
+    
+    # if ep%20 ==0:
+    #     logging.info(f"edge_index : {model.edge_index.shape}")
+    #     logging.info(f"edge_weight min max : {model.edge_weight.min()} {model.edge_weight.max()}")
+        
+    # if ep >= 1500 and ep % 500 == 0:
+    if ep >= 1500 and ep % 500 == 0:
+        torch.save(model.state_dict(), os.path.join(path_model, f'model_epoch_{ep}.pth'))
+        logging.info(f'Model saved at epoch {ep}')
+
+        
+    if ep%20 ==0:
+            
+        if dataset_name == "darcy" and noise_std is not None:
+            
+            indices = random.sample(range(ntest), 4)
+            # Set up the figure and subplots
+            fig, ax = plt.subplots(nrows=4, ncols=4, figsize=(30, 25))
+
+            # Plot each selected example
+            for col, ind in enumerate(indices):
+
+                # Get the prediction and ground truth data
+                out = plot_data[ind]['out']
+                pred = out.view(batch_size, dataset.sx, dataset.sy).squeeze(0).detach().cpu().numpy().flatten()
+                truth = plot_data[ind]['y'].view(dataset.sx, dataset.sy).squeeze().detach().cpu().numpy().flatten()
+                error = (truth - pred) ** 2
+                
+                input = plot_data[ind]['x'].view(dataset.sx, dataset.sy).detach().cpu().numpy().flatten()
+
+                pos = plot_data[ind]['pos'].squeeze(0).detach().cpu().numpy()
+                X = pos[:, 0]
+                Y = pos[:, 1]
+
+                # Determine color limits based on the truth data
+                vmin, vmax = truth.min(), truth.max()
+                
+                # Plot input data as a scatter plot
+                pic0 = ax[0, col].scatter(X, Y, c=input, cmap='RdBu_r', s=5)
+                
+                norm = mpl.colors.Normalize(vmin=0, vmax=1)
+                empty_cbar = mpl.cm.ScalarMappable(norm=norm, cmap='viridis')
+                empty_cbar.set_array([])
+                fig.colorbar(empty_cbar, ax=ax[0, col]).remove()
+
+                # Plot ground truth using tripcolor
+                pic1 = ax[1, col].tripcolor(X, Y, truth, cmap='RdBu_r', shading='gouraud', vmin=vmin, vmax=vmax)
+                cbar1 = fig.colorbar(pic1, ax=ax[1, col])
+                cbar1.ax.tick_params(labelsize=20)
+
+                # Plot prediction using tripcolor
+                pic2 = ax[2, col].tripcolor(X, Y, pred, cmap='RdBu_r', shading='gouraud', vmin=vmin, vmax=vmax)
+                cbar2 = fig.colorbar(pic2, ax=ax[2, col])
+                cbar2.ax.tick_params(labelsize=20)
+
+                # Plot error using tripcolor
+                pic3 = ax[3, col].tripcolor(X, Y, error, cmap='RdBu_r', shading='gouraud')
+                cbar3 = fig.colorbar(pic3, ax=ax[3, col])
+                cbar3.ax.tick_params(labelsize=20)
+
+                # Remove axis ticks and axis frames
+                for i in range(4):
+                    ax[i, col].set_xticks([])
+                    ax[i, col].set_yticks([])
+                    ax[i, col].spines['top'].set_visible(False)
+                    ax[i, col].spines['right'].set_visible(False)
+                    ax[i, col].spines['bottom'].set_visible(False)
+                    ax[i, col].spines['left'].set_visible(False)
+                    # ax[i, col].set_facecolor('white')
+                    # ax[i, col].set_facecolor('none')  # Set background to transparent
+
+            # Set row-wise titles
+            row_titles = ['Input', 'Ground Truth', 'Prediction', 'Error']
+            for row, title in enumerate(row_titles):
+                ax[row, 0].set_ylabel(title, fontdict={'fontsize': 30, 'fontweight': 'bold', 'fontname': 'serif'}, rotation=90)
+
+            # Adjust layout and save the figure
+            plt.tight_layout()
+            testloss = test_l2_61 / len(test_loader)
+            plt.savefig(path_image_test61 + f'test_at_epoch_{ep}_loss_{testloss:.4f}.png', transparent=False)
+            plt.close()
+
+
+save_results(log_folder, f"Final Test mse for GraphFNO after {epochs} epochs: {test_l2_61 / ntest}")
+export_excel(os.path.join(log_folder, 'log.txt'), os.path.join(log_folder, f'{dataset_name}_sp2gno_loss.xlsx'))
+
+logging.info("==================Training finished !==================")
