@@ -10,8 +10,8 @@
 ### set up a conda environment
 
 ```
-conda create -n grade_env python=3.8
-conda activate grade_env
+conda create -n sp2gno_env python=3.8
+conda activate sp2gno_env
 sh install.sh
 ```
 
