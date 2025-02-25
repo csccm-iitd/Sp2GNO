@@ -1,9 +1,6 @@
-# PI-GANO
-
-This repository is the official implementation of the paper: [Physics-Informed Geometry-Aware Neural Operator](https://www.sciencedirect.com/science/article/pii/S0045782524007941?via%3Dihub), published in Journal of Computer Methods in Applied Mechanics and Engineering. The arxiv version of paper can also be found [here](https://arxiv.org/html/2408.01600v1).
 # Sp2GNO
 
-### This repository contains the official implemention of the paper : [Spatio-spectral graph neural operator for solving computational mechanics problems on irregular domain and unstructured grid](https://www.sciencedirect.com/science/article/pii/S0045782524009137). The arxiv version of paper can also be found [here](https://arxiv.org/abs/2409.00604v1).
+This repository contains the official implemention of the paper : [Spatio-spectral graph neural operator for solving computational mechanics problems on irregular domain and unstructured grid](https://www.sciencedirect.com/science/article/pii/S0045782524009137),published in Journal of Computer Methods in Applied Mechanics and Engineering. The arxiv version of paper can also be found [here](https://arxiv.org/abs/2409.00604v1).
 ![Sp2GNO](./images/SP2GNO_schematic_fig.png "Sp2GNO Overall Architecture")
 ## Hyperelasticity Problem
 
